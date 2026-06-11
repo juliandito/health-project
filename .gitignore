@@ -50,3 +50,6 @@ dist/
 
 # Coverage
 coverage.xml
+
+# Other
+reference-*
