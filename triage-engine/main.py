@@ -185,7 +185,9 @@ async def submit_triage(request: Request, authorization: str = Header(default=""
     symptoms = body.get("symptoms", "")
     # BUG-FIX-NEEDED: only checks None/missing, accepts whitespace strings like "   " or ""
     # Candidates should add proper validation: symptoms.strip() check
-    if symptoms is None:
+
+    # 400 if not a string or empty string
+    if not isinstance(symptoms, str) or not symptoms.strip():
         REQUEST_COUNT.labels("POST", "/api/v1/triage", "400").inc()
         return JSONResponse(status_code=400, content={
             "error": "MISSING_SYMPTOMS", "message": "Field 'symptoms' is required"
