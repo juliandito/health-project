@@ -33,7 +33,7 @@ env:
 jobs:
   deploy-prod:
     name: "Stage 6 — Deploy Production"
-    # Runs on your local WSL machine where kubectl is configured for the kind cluster.
+    # Runs on local WSL machine: execute locally.
     runs-on: self-hosted
     steps:
       - name: Validate confirmed input
