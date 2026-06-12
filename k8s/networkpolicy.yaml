@@ -1,0 +1,69 @@
+# Purpose: enforce that mock-ai-service is only reachable from triage-engine and cannot
+# make arbitrary outbound connections.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mock-ai-default-deny
+  namespace: healthcare-triage-dev
+  labels:
+    environment: dev
+spec:
+  podSelector:
+    matchLabels:
+      app: mock-ai-service
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# Allows only triage-engine pods to call mock-ai-service on the service port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-triage-to-mock-ai
+  namespace: healthcare-triage-dev
+  labels:
+    environment: dev
+spec:
+  podSelector:
+    matchLabels:
+      app: mock-ai-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: triage-engine
+      ports:
+        - protocol: TCP
+          port: 8000
+
+---
+# Allows DNS resolution only; all other egress from mock-ai-service remains blocked.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mock-ai-dns-egress
+  namespace: healthcare-triage-dev
+  labels:
+    environment: dev
+spec:
+  podSelector:
+    matchLabels:
+      app: mock-ai-service
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

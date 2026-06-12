@@ -1,0 +1,8 @@
+# Purpose: isolate all assessment resources in a dedicated development namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: healthcare-triage-dev
+  labels:
+    environment: dev
+    app.kubernetes.io/part-of: healthcare-triage

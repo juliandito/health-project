@@ -1,0 +1,62 @@
+# Purpose: run replicated auth-service pods with health probes and controlled resources.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: healthcare-triage-dev
+  labels:
+    app: auth-service
+    environment: dev
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+        environment: dev
+    spec:
+      containers:
+        - name: auth-service
+          image: ghcr.io/example/health-triage/auth-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8001
+              name: http
+          env:
+            - name: TOKEN_EXPIRY_MINUTES
+              valueFrom:
+                configMapKeyRef:
+                  name: triage-platform-config
+                  key: TOKEN_EXPIRY_MINUTES
+            - name: JWT_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: triage-platform-secrets
+                  key: JWT_SIGNING_KEY
+          # Allocation Justification: lightweight token validation only, no heavy processing expected.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          livenessProbe: # is alive check
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe: # is ready check
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3

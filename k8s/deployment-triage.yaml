@@ -1,0 +1,74 @@
+# Purpose: run triage-engine with more compute headroom for orchestration and retry logic.
+# Rationale: triage-engine performs outbound auth + AI calls and retry handling, so it needs
+# higher resources than auth-service to avoid throttling during bursts.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: triage-engine
+  namespace: healthcare-triage-dev
+  labels:
+    app: triage-engine
+    environment: dev
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: triage-engine
+  template:
+    metadata:
+      labels:
+        app: triage-engine
+        environment: dev
+    spec:
+      containers:
+        - name: triage-engine
+          image: ghcr.io/example/health-triage/triage-engine:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8002
+              name: http
+          env:
+            - name: AUTH_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: triage-platform-config
+                  key: AUTH_SERVICE_URL
+            - name: AI_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: triage-platform-config
+                  key: AI_SERVICE_URL
+            - name: AI_TIMEOUT_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: triage-platform-config
+                  key: AI_TIMEOUT_SECONDS
+            - name: AI_MAX_RETRIES
+              valueFrom:
+                configMapKeyRef:
+                  name: triage-platform-config
+                  key: AI_MAX_RETRIES
+          # Allocation Justification: main business logic, orchestration and retry handling
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
