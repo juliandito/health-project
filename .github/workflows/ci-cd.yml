@@ -1,0 +1,294 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# CI/CD Pipeline — triage-engine
+#
+# Design:
+#   - Stages run sequentially; each requires the previous to pass.
+#   - Image is built once (SHA tagged) and promoted through stages.
+#   - Staging is temp (created/destroyed per run in CI).
+#   - Production is deployed via a separate manual workflow (deploy-prod.yml)
+#     due to free-plan constraints.
+#
+# Stages:
+#   1. lint-scan    → code style + secret detection
+#   2. test         → unit tests with 70% coverage gate
+#   3. build        → build image, push to GHCR with SHA tag
+#   4. image-scan   → Trivy scan, block on CRITICAL CVE
+#   5. deploy-staging → temp kind cluster, smoke test
+#   6. deploy-prod  → triggered from deploy-prod.yml (manual, self-hosted runner)
+#
+# Trigger matrix:
+#   feature/* / hotfix/* → stages 1–4
+#   develop              → stages 1–5
+#   main                 → stages 1–5 (stage 6 triggered separately)
+#   PR                   → stages 1–2
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: triage-engine CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - "feature/**"
+      - "hotfix/**"
+  pull_request:
+    branches:
+      - main
+      - develop
+
+# Cancel older runs for the same branch/PR when a new commit is pushed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/juliandito/health-triage/triage-engine
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────
+  # Stage 1 — Lint & Secret Scan
+  # ─────────────────────────────────────────────────────────
+  lint-scan:
+    name: "Stage 1 — Lint & Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Python linting with ruff (fast, replaces flake8 + isort + pyupgrade)
+      - name: Install ruff
+        run: pip install ruff==0.9.0
+
+      - name: Lint — ruff
+        run: ruff check triage-engine/
+
+      - name: Install detect-secrets
+        run: pip install detect-secrets==1.5.0
+
+      - name: Scan files for secrets
+        run: |
+          detect-secrets scan \
+            --baseline triage-engine/.secrets.baseline \
+            --exclude-files '.*\.pyc'
+
+      # Scan git history for accidentally committed secrets
+      - name: Scan git history — gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─────────────────────────────────────────────────────────
+  # Stage 2 — Unit Tests (70% coverage gate)
+  # ─────────────────────────────────────────────────────────
+  test:
+    name: "Stage 2 — Test"
+    runs-on: ubuntu-latest
+    needs: lint-scan
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install \
+            -r triage-engine/requirements.txt \
+            -r triage-engine/requirements-dev.txt
+
+      - name: Run tests with coverage
+        working-directory: triage-engine
+        run: |
+          pytest \
+            --cov=. \
+            --cov-fail-under=70 \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            -v
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: triage-engine/coverage.xml
+
+  # ─────────────────────────────────────────────────────────
+  # Stage 3 — Build & Push Docker Image
+  # Runs on: push only (not PRs), after tests pass
+  # ─────────────────────────────────────────────────────────
+  build:
+    name: "Stage 3 — Build & Push"
+    runs-on: ubuntu-latest
+    needs: test
+    # Don't build on pull requests — only on actual pushes to branches
+    if: github.event_name == 'push'
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Log in to GitHub Container Registry using the built-in GITHUB_TOKEN.
+      # No extra secret needed — GitHub provides this automatically.
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: triage-engine/
+          file: triage-engine/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────────────────
+  # Stage 4 — Image CVE Scan with Trivy
+  # Blocks the pipeline on any CRITICAL vulnerability
+  # ─────────────────────────────────────────────────────────
+  image-scan:
+    name: "Stage 4 — Image Scan (Trivy)"
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      security-events: write  # required to upload SARIF to GitHub Security tab
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan image — Trivy (block on CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: "${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          format: "sarif"
+          output: "trivy-results.sarif"
+          severity: "CRITICAL"
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Upload Trivy SARIF report
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+  # ─────────────────────────────────────────────────────────
+  # Stage 5 — Deploy to Staging
+  # Creates an temp kind cluster inside the CI runner,
+  # deploys triage-engine, runs a smoke test, then tears down.
+  # Runs on: push to main or develop only
+  # ─────────────────────────────────────────────────────────
+  deploy-staging:
+    name: "Stage 5 — Deploy Staging"
+    runs-on: ubuntu-latest
+    needs: image-scan
+    if: |
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Install kind — Kubernetes-in-Docker tool for local/CI clusters
+      - name: Install kind
+        run: |
+          curl -Lo /usr/local/bin/kind \
+            https://kind.sigs.k8s.io/dl/v0.25.0/kind-linux-amd64
+          chmod +x /usr/local/bin/kind
+
+      # Install kubectl
+      - name: Install kubectl
+        run: |
+          curl -Lo /usr/local/bin/kubectl \
+            "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x /usr/local/bin/kubectl
+
+      - name: Create staging cluster
+        run: kind create cluster --name staging --wait 60s
+
+      - name: Load image into cluster
+        run: |
+          docker pull ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          kind load docker-image ${{ env.IMAGE_NAME }}:${{ github.sha }} --name staging
+
+      - name: Deploy to staging
+        run: |
+          kubectl apply -f k8s/namespace-staging.yaml
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/service-triage.yaml
+          kubectl apply -f k8s/deployment-triage.yaml
+          kubectl set image deployment/triage-engine \
+            triage-engine=${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            -n healthcare-triage-staging
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/triage-engine \
+            -n healthcare-triage-staging \
+            --timeout=120s
+
+      # Smoke test: forward port 8002 locally and check /health returns HTTP 200
+      - name: Smoke test — /health endpoint
+        run: |
+          kubectl port-forward \
+            svc/triage-engine 8002:8002 \
+            -n healthcare-triage-staging &
+          PF_PID=$!
+          sleep 3
+
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8002/health)
+          echo "Health endpoint returned: $HTTP_STATUS"
+
+          kill $PF_PID 2>/dev/null || true
+
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "SMOKE TEST FAILED — expected 200, got $HTTP_STATUS"
+            exit 1
+          fi
+          echo "Smoke test passed."
+
+      # Always clean up the staging cluster
+      - name: Tear down staging cluster
+        if: always()
+        run: kind delete cluster --name staging
+
+      - name: Print SHA for production deployment
+        run: |
+          echo "Staging passed. To deploy to production:"
+          echo "  Actions → Deploy to Production → Run workflow"
+          echo "  image_sha: ${{ github.sha }}"
+          echo "  confirmed: true"

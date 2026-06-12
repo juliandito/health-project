@@ -1,0 +1,63 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Stage 6 — Production Deploy (Manual trigger via workflow_dispatch)
+#
+# Design: This is a separate workflow because GitHub Environment Required Reviewers
+# (the built-in approval gate) is not available on the free plan. The workaround is
+# workflow_dispatch + confirmed input. 
+#
+# The manual trigger in the UI acts as the
+# approval gate; confirmed=true guards against accidental API/CLI invocations.
+#
+# Triggered from: .github/workflows/ci-cd.yml after stages 1-5 pass.
+# Runs on: self-hosted runner (local WSL machine with kind cluster access).
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_sha:
+        description: "Full git SHA of the image to deploy (from ci-cd.yml Stage 3 logs)"
+        required: true
+        type: string
+      confirmed:
+        description: "Type 'true' to confirm you want to deploy this SHA to production"
+        required: true
+        type: boolean
+        default: false
+
+env:
+  IMAGE_NAME: ghcr.io/juliandito/health-triage/triage-engine
+
+jobs:
+  deploy-prod:
+    name: "Stage 6 — Deploy Production"
+    # Runs on your local WSL machine where kubectl is configured for the kind cluster.
+    runs-on: self-hosted
+    steps:
+      - name: Validate confirmed input
+        run: |
+          if [ "${{ inputs.confirmed }}" != "true" ]; then
+            echo "Aborted: confirmed must be 'true'"
+            exit 1
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Update image
+        run: |
+          kubectl set image deployment/triage-engine \
+            triage-engine=${{ env.IMAGE_NAME }}:${{ inputs.image_sha }} \
+            -n healthcare-triage-dev
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/triage-engine \
+            -n healthcare-triage-dev \
+            --timeout=120s
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n healthcare-triage-dev -l app=triage-engine
