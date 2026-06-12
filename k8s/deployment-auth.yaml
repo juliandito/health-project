@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: auth-service
-          image: ghcr.io/example/health-triage/auth-service:1.0.0
+          image: ghcr.io/juliandito/health-triage/auth-service:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8001

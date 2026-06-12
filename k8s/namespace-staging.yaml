@@ -1,0 +1,9 @@
+# Purpose: ephemeral staging namespace used by the CI/CD pipeline for smoke tests.
+# Created by the deploy-staging job in GitHub Actions and destroyed at the end of the job.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: healthcare-triage-staging
+  labels:
+    environment: staging
+    app.kubernetes.io/part-of: healthcare-triage

@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: mock-ai-service
-          image: ghcr.io/example/health-triage/mock-ai-service:1.0.0
+          image: ghcr.io/juliandito/health-triage/mock-ai-service:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000

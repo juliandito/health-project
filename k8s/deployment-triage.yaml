@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: triage-engine
-          image: ghcr.io/example/health-triage/triage-engine:1.0.0
+          image: ghcr.io/juliandito/health-triage/triage-engine:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8002
