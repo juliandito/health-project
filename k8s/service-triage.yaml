@@ -6,6 +6,10 @@ metadata:
   labels:
     app: triage-engine
     environment: dev
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8002"
 spec:
   type: ClusterIP
   selector:
