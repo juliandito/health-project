@@ -1,0 +1,93 @@
+server:
+  global:
+    scrape_interval: 15s
+    evaluation_interval: 15s
+  persistentVolume:
+    enabled: false
+
+alertmanager:
+  persistence:
+    enabled: false
+
+kube-state-metrics:
+  enabled: true
+
+prometheus-node-exporter:
+  enabled: false
+
+prometheus-pushgateway:
+  enabled: false
+
+serverFiles:
+  alerting_rules.yml:
+    groups:
+      - name: healthcare-triage-alerts
+        rules:
+          - alert: TriageEngineDown
+            expr: sum(up{namespace="healthcare-triage-dev",service="triage-engine"}) < 1
+            for: 30s
+            labels:
+              severity: critical
+              service: triage-engine
+            annotations:
+              summary: triage-engine is down
+              description: No triage-engine target has been up for at least 30 seconds.
+
+          - alert: MockAiServiceHighP95Latency
+            expr: histogram_quantile(0.95, sum(rate(mock_ai_request_duration_seconds_bucket{endpoint="/api/v1/triage"}[5m])) by (le)) > 3
+            for: 2m
+            labels:
+              severity: critical
+              service: mock-ai-service
+            annotations:
+              summary: mock-ai-service p95 latency is too high
+              description: mock-ai-service p95 latency has stayed above 3 seconds for 2 minutes.
+
+          - alert: ApiGatewayHighErrorRate
+            expr: (sum(rate(nginx_ingress_controller_requests{namespace="healthcare-triage-dev",ingress="api-gateway",status=~"5.."}[5m])) / sum(rate(nginx_ingress_controller_requests{namespace="healthcare-triage-dev",ingress="api-gateway"}[5m]))) > 0.05
+            for: 5m
+            labels:
+              severity: warning
+              service: api-gateway
+            annotations:
+              summary: api-gateway error rate is high
+              description: api-gateway 5xx responses have stayed above 5% for 5 minutes.
+
+          - alert: AuthServiceHighErrorRate
+            expr: (sum(rate(auth_requests_total{status=~"5.."}[5m])) / sum(rate(auth_requests_total[5m]))) > 0.05
+            for: 5m
+            labels:
+              severity: warning
+              service: auth-service
+            annotations:
+              summary: auth-service error rate is high
+              description: auth-service 5xx responses have stayed above 5% for 5 minutes.
+
+          - alert: TriageEngineHighErrorRate
+            expr: (sum(rate(triage_requests_total{status=~"5.."}[5m])) / sum(rate(triage_requests_total[5m]))) > 0.05
+            for: 5m
+            labels:
+              severity: warning
+              service: triage-engine
+            annotations:
+              summary: triage-engine error rate is high
+              description: triage-engine 5xx responses have stayed above 5% for 5 minutes.
+
+          - alert: MockAiServiceHighErrorRate
+            expr: (sum(rate(mock_ai_requests_total{status=~"5.."}[5m])) / sum(rate(mock_ai_requests_total[5m]))) > 0.05
+            for: 5m
+            labels:
+              severity: warning
+              service: mock-ai-service
+            annotations:
+              summary: mock-ai-service error rate is high
+              description: mock-ai-service 5xx responses have stayed above 5% for 5 minutes.
+
+          - alert: PodRestartBurst
+            expr: sum by (pod) (increase(kube_pod_container_status_restarts_total{namespace="healthcare-triage-dev"}[10m])) > 3
+            for: 0m
+            labels:
+              severity: warning
+            annotations:
+              summary: Pod restart count is high
+              description: Pod {{ $labels.pod }} restarted more than 3 times in the last 10 minutes.
